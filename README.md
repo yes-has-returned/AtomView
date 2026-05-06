@@ -13,6 +13,6 @@ To install the program:
 
 To run the program: 
 
-3. From inside the extracted folder, open the folder AtomView, and then the file main.py
+3. From inside the extracted folder, open the folder AtomView, AtomView again, and then the file main.py
 4. Run the file main.py using a built in python IDE or install vscode if this is not available
 5. Go to the url localhost:5000/render
