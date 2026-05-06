@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+    <head>
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/topnavstyle.css') }}">
+        <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+        <title>AtomView</title>
+    </head>
+</html>
+<body>
+    <div class="topnav">
+            <a href="/">Home</a>
+            <a href="/">Placeholder</a>
+            <a href="/">Placeholder</a>
+            <a href="/">Placeholder</a>
+    </div>
+    {% block content %}{% endblock %}
+</body>
