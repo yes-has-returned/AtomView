@@ -270,6 +270,111 @@ details[open] summary::after {
   transform: rotate(180deg);
 }
 
+.community-entries-list {
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.community-entries-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.community-entries-list::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+}
+
+.community-entries-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.community-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background: #fff;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.community-entry.selected {
+  border-color: #0066cc;
+  background: #eef4ff;
+}
+
+.community-entry-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.community-entry-smiles {
+  flex: 1;
+  cursor: pointer;
+  font-family: monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #111;
+}
+
+.community-entry-score {
+  font-size: 12px;
+  color: #555;
+  white-space: nowrap;
+}
+
+.vote-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.vote-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #333;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.vote-button:hover.upvote {
+  color: #0a8d00;
+  border-color: rgba(10, 141, 0, 0.2);
+  background: rgba(10, 141, 0, 0.06);
+}
+
+.vote-button:hover.downvote {
+  color: #c82323;
+  border-color: rgba(200, 35, 35, 0.2);
+  background: rgba(200, 35, 35, 0.06);
+}
+
+.vote-button.active.upvote {
+  color: #0a8d00;
+  border-color: rgba(10, 141, 0, 0.35);
+  background: rgba(10, 141, 0, 0.12);
+}
+
+.vote-button.active.downvote {
+  color: #c82323;
+  border-color: rgba(200, 35, 35, 0.35);
+  background: rgba(200, 35, 35, 0.12);
+}
+
+.vote-count {
+  min-width: 24px;
+  text-align: right;
+}
+
 /* Right Sidebar Content */
 .right-content {
   display: flex;

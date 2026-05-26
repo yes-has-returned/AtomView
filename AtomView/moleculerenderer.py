@@ -5,6 +5,7 @@ import requests
 import glypy
 from glypy.algorithms import subtree_search
 import re
+import sqlite3
 try:
     import openbabel
     OPENBABEL_AVAILABLE = True
@@ -12,12 +13,13 @@ except ImportError:
     OPENBABEL_AVAILABLE = False
 
 class Atom:
-    def __init__(self, id, symbol, x, y, z):
+    def __init__(self, id, symbol, x, y, z, charge=0):
         self.id = id
         self.symbol = symbol
         self.x = x
         self.y = y
         self.z = z
+        self.charge = charge
 
 def retrieve_smiles_pubchem(name):
     results = pcp.get_compounds(name, 'name')
@@ -77,8 +79,9 @@ def generate_molecule_data(smiles, omit_hydrogens=False):
             for atom in openbabel.OBMolAtomIter(obMol):
                 idx = atom.GetIdx()
                 symbol = atom.GetType()  # Approximate symbol
+                charge = atom.GetFormalCharge() if hasattr(atom, 'GetFormalCharge') else 0
                 pos = atom.GetVector()
-                positions.append(Atom(idx, symbol, pos.GetX(), pos.GetY(), pos.GetZ()))
+                positions.append(Atom(idx, symbol, pos.GetX(), pos.GetY(), pos.GetZ(), charge))
             
             # Extract bonds
             bonds = []
@@ -116,8 +119,15 @@ def generate_molecule_data(smiles, omit_hydrogens=False):
     for atom in mol.GetAtoms():
         idx = atom.GetIdx()
         symbol = atom.GetSymbol()
+        charge = atom.GetFormalCharge()
         pos = conf.GetAtomPosition(idx)
-        positions.append(Atom(idx, symbol, pos.x, pos.y, pos.z))
+        positions.append(Atom(idx, symbol, pos.x, pos.y, pos.z, charge))
+
+    # If the molecule contains disconnected fragments, place each fragment apart
+    # so ionic compounds and salts do not render as overlapping atoms.
+    fragments = Chem.GetMolFrags(mol, asMols=False)
+    if len(fragments) > 1:
+        positions = _reposition_disconnected_fragments(mol, positions)
 
     bonds = []
 
@@ -130,6 +140,38 @@ def generate_molecule_data(smiles, omit_hydrogens=False):
         bonds.append((start_idx, end_idx, str(bond_type)))
 
     return positions, bonds
+
+
+def _reposition_disconnected_fragments(mol, positions, spacing=4.0):
+    """Place separate ionic fragments on distinct offsets so disconnected ions render visibly."""
+    fragments = Chem.GetMolFrags(mol, asMols=False)
+    if len(fragments) <= 1:
+        return positions
+
+    offset = 0.0
+    repositioned = [None] * mol.GetNumAtoms()
+
+    for frag_indices in fragments:
+        frag_positions = [positions[atom_idx] for atom_idx in frag_indices]
+        cx = sum(p.x for p in frag_positions) / len(frag_positions)
+        cy = sum(p.y for p in frag_positions) / len(frag_positions)
+        cz = sum(p.z for p in frag_positions) / len(frag_positions)
+
+        for atom_idx in frag_indices:
+            old = positions[atom_idx]
+            repositioned[atom_idx] = Atom(
+                atom_idx,
+                old.symbol,
+                old.x - cx + offset,
+                old.y - cy,
+                old.z - cz,
+                old.charge
+            )
+
+        offset += spacing
+
+    return repositioned
+
 
 def retrieve_smiles_pyopsin(name):
 # OPSIN Web API Endpoint
@@ -258,6 +300,133 @@ def identify_polymer_endpoints(smiles):
             "tail_idx": endpoints[-1] # Usually the furthest atom in the chain
         }
     return None
+
+def insert_community_sourced(name, smiles):
+    con = sqlite3.connect('AtomView/database_files/community_database.db')
+    cur = con.cursor()
+    cur.execute("INSERT INTO community_molecules (name, [smiles-code], upvotes, downvotes) VALUES (?, ?, 0, 0)", (name, smiles))
+    con.commit()
+    cur.close()
+    con.close()
+
+
+def query_community_entries(name):
+    con = sqlite3.connect('AtomView/database_files/community_database.db')
+    cur = con.cursor()
+    cur.execute(
+        "SELECT rowid AS id, name, [smiles-code] AS smiles, upvotes, downvotes FROM community_molecules WHERE name = ? COLLATE NOCASE",
+        (name,)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    con.close()
+
+    entries = [
+        {
+            "id": row[0],
+            "name": row[1],
+            "smiles": row[2],
+            "upvotes": row[3],
+            "downvotes": row[4],
+            "score": row[3] - row[4]
+        }
+        for row in rows
+    ]
+    entries.sort(key=lambda entry: (entry["score"], entry["upvotes"]), reverse=True)
+    return entries
+
+
+def _ensure_votes_table():
+    con = sqlite3.connect('AtomView/database_files/community_database.db')
+    cur = con.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS community_votes (
+            entry_rowid INTEGER,
+            voter_id TEXT,
+            vote TEXT,
+            UNIQUE(entry_rowid, voter_id)
+        )
+        """
+    )
+    con.commit()
+    cur.close()
+    con.close()
+
+
+def adjust_community_vote(entry_id, voter_id, vote):
+    """
+    Enforce one vote per `voter_id` per community entry.
+    `vote` may be 'up', 'down' or 'none' (to remove vote).
+    Returns current up/down counts and stored vote for this voter.
+    """
+    if vote not in ('up', 'down', 'none'):
+        raise ValueError('Invalid vote value')
+
+    _ensure_votes_table()
+    con = sqlite3.connect('AtomView/database_files/community_database.db')
+    cur = con.cursor()
+
+    cur.execute("SELECT vote FROM community_votes WHERE entry_rowid = ? AND voter_id = ?", (entry_id, voter_id))
+    row = cur.fetchone()
+    prev = row[0] if row else None
+
+    # No-op if attempting to set same vote again
+    if prev == vote and vote in ('up', 'down'):
+        # fetch counts
+        cur.execute("SELECT upvotes, downvotes FROM community_molecules WHERE rowid = ?", (entry_id,))
+        counts = cur.fetchone()
+        cur.close()
+        con.close()
+        return {"upvotes": counts[0], "downvotes": counts[1], "vote": prev}
+
+    # Remove vote
+    if vote == 'none':
+        if prev is None:
+            # nothing to do
+            pass
+        else:
+            cur.execute("DELETE FROM community_votes WHERE entry_rowid = ? AND voter_id = ?", (entry_id, voter_id))
+            if prev == 'up':
+                cur.execute("UPDATE community_molecules SET upvotes = MAX(0, upvotes - 1) WHERE rowid = ?", (entry_id,))
+            else:
+                cur.execute("UPDATE community_molecules SET downvotes = MAX(0, downvotes - 1) WHERE rowid = ?", (entry_id,))
+
+    else:
+        # Add new vote
+        if prev is None:
+            cur.execute("INSERT OR REPLACE INTO community_votes (entry_rowid, voter_id, vote) VALUES (?, ?, ?)", (entry_id, voter_id, vote))
+            if vote == 'up':
+                cur.execute("UPDATE community_molecules SET upvotes = upvotes + 1 WHERE rowid = ?", (entry_id,))
+            else:
+                cur.execute("UPDATE community_molecules SET downvotes = downvotes + 1 WHERE rowid = ?", (entry_id,))
+        else:
+            # switch vote
+            cur.execute("UPDATE community_votes SET vote = ? WHERE entry_rowid = ? AND voter_id = ?", (vote, entry_id, voter_id))
+            if vote == 'up':
+                cur.execute("UPDATE community_molecules SET upvotes = upvotes + 1, downvotes = MAX(0, downvotes - 1) WHERE rowid = ?", (entry_id,))
+            else:
+                cur.execute("UPDATE community_molecules SET downvotes = downvotes + 1, upvotes = MAX(0, upvotes - 1) WHERE rowid = ?", (entry_id,))
+
+    con.commit()
+
+    # fetch updated counts
+    cur.execute("SELECT upvotes, downvotes FROM community_molecules WHERE rowid = ?", (entry_id,))
+    counts = cur.fetchone()
+
+    # determine stored vote for this voter
+    cur.execute("SELECT vote FROM community_votes WHERE entry_rowid = ? AND voter_id = ?", (entry_id, voter_id))
+    vrow = cur.fetchone()
+    stored_vote = vrow[0] if vrow else None
+
+    cur.close()
+    con.close()
+    return {"upvotes": counts[0], "downvotes": counts[1], "vote": stored_vote}
+
+
+def validate_smiles(smiles):
+    mol = Chem.MolFromSmiles(smiles)
+    return mol is not None
 
 
 # molname = input("Enter the name of the molecule: ")

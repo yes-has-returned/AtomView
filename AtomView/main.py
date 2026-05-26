@@ -54,7 +54,8 @@ def get_atomic_key(smiles):
 def parse_geometry(positions, bonds):
     """Utility to convert RDKit objects into serializable JSON."""
     parsed_atoms = [{
-        "id": a.id, "symbol": a.symbol, 
+        "id": a.id, "symbol": a.symbol,
+        "charge": getattr(a, 'charge', 0),
         "x": a.x, "y": a.y, "z": a.z
     } for a in positions]
     
@@ -129,7 +130,11 @@ def render_backend_name():
         if smiles: break
 
     if not smiles:
-        return jsonify({"error": "Molecule not found."}), 404
+        community_entries = moleculerenderer.query_community_entries(name)
+        response = {"error": "Molecule not found. Check your input or choose a community entry below."}
+        if community_entries:
+            response["community_entries"] = community_entries
+        return jsonify(response), 404
 
     try:
         positions, bonds = moleculerenderer.generate_molecule_data(smiles)
@@ -152,6 +157,86 @@ def render_backend_name():
         "structure_image": structure_image,
         "atomic_key": atomic_key
     })
+
+@app.route('/renderbackend/community/add', methods=['POST'])
+def add_community_entry():
+    data = request.get_json(silent=True) or {}
+    name = data.get('name')
+    smiles = data.get('smiles')
+    if not name or not smiles:
+        return jsonify({"error": "Both name and SMILES must be provided."}), 400
+
+    if not moleculerenderer.validate_smiles(smiles):
+        return jsonify({"error": "Invalid SMILES string."}), 400
+
+    try:
+        moleculerenderer.insert_community_sourced(name, smiles)
+        return jsonify({"message": "Community entry added successfully."})
+    except Exception as e:
+        return jsonify({"error": f"Failed to add community entry: {e}"}), 500
+
+@app.route('/renderbackend/community/entries')
+def get_community_entries():
+    name = request.args.get('name')
+    if not name:
+        return jsonify({"error": "No name provided."}), 400
+
+    entries = moleculerenderer.query_community_entries(name)
+
+    # Optionally include the requesting user's vote for each entry when a voter_id is provided
+    voter_id = request.args.get('voter_id')
+    if voter_id:
+        try:
+            # Ensure votes table exists
+            if hasattr(moleculerenderer, '_ensure_votes_table'):
+                moleculerenderer._ensure_votes_table()
+
+            con = __import__('sqlite3').connect('AtomView/database_files/community_database.db')
+            cur = con.cursor()
+            entry_ids = [e['id'] for e in entries]
+            if entry_ids:
+                placeholders = ','.join('?' for _ in entry_ids)
+                q = f"SELECT entry_rowid, vote FROM community_votes WHERE voter_id = ? AND entry_rowid IN ({placeholders})"
+                cur.execute(q, (voter_id, *entry_ids))
+                rows = cur.fetchall()
+                vote_map = {r[0]: r[1] for r in rows}
+            else:
+                vote_map = {}
+            cur.close()
+            con.close()
+
+            for e in entries:
+                e['user_vote'] = vote_map.get(e['id']) if vote_map.get(e['id']) else None
+        except Exception:
+            # If anything goes wrong, don't block the entries; just omit user_vote
+            for e in entries:
+                e['user_vote'] = None
+
+    return jsonify({"community_entries": entries})
+
+@app.route('/renderbackend/community/vote', methods=['POST'])
+def vote_community_entry():
+    data = request.get_json(silent=True) or {}
+    entry_id = data.get('entry_id')
+    vote = data.get('vote')
+    previous_vote = data.get('previous_vote')
+
+    if entry_id is None:
+        return jsonify({"error": "No entry_id provided."}), 400
+    if vote not in ('up', 'down', 'none'):
+        return jsonify({"error": "Invalid vote type."}), 400
+
+    voter_id = data.get('voter_id')
+    if not voter_id:
+        return jsonify({"error": "No voter_id provided."}), 400
+
+    try:
+        counts = moleculerenderer.adjust_community_vote(entry_id, voter_id, vote)
+        return jsonify(counts)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": f"Failed to update vote: {e}"}), 500
 
 @app.route('/renderbackend/smiles')
 def render_backend_smiles():
