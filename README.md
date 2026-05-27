@@ -8,7 +8,7 @@ This program was made as a part of the NSW HSC Software Engineering Year 12 curr
 
 ## Operation Directions
 To install the program: 
-1. Download the .zip file from [this repository](https://github.com/yes-has-returned/AtomView/releases/tag/testing)
+1. Download the .zip file from [this repository](https://github.com/yes-has-returned/AtomView/releases/tag/testing_v2)
 2. Extract the contents of the folder
 
 To run the program: 
