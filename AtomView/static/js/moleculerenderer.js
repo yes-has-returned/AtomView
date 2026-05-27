@@ -6,7 +6,8 @@ let moleculeState = {
     bonds: [],
     assembly_instructions: [],
     isLoaded: false,
-    numChains: 10
+    numChains: 10,
+    lowDetailMode: false
 };
 
 let lastRenderedSettings = null;
@@ -15,6 +16,27 @@ let selectedCommunityEntryId = null;
 let communityPanelVisible = false;
 let voterId = null;
 let activeCamera = null;
+let currentRenderer = null;
+let currentAnimationId = null;
+let sphereGeometryCache = new Map();
+let shellGeometryCache = new Map();
+let shellMaterialCache = new Map();
+let bondGeometry = null;
+const standardBondMaterial = new THREE.MeshStandardMaterial({ color: 0x999999 });
+const aromaticBondMaterial = new THREE.LineDashedMaterial({
+    color: 0x999999,
+    dashSize: 0.15,
+    gapSize: 0.1,
+    transparent: true,
+    opacity: 0.85
+});
+const ionicLinkMaterial = new THREE.LineDashedMaterial({
+    color: 0x2f76d9,
+    dashSize: 0.2,
+    gapSize: 0.1,
+    transparent: true,
+    opacity: 0.9
+});
 let freeCameraState = {
     moveForward: false,
     moveBackward: false,
@@ -87,12 +109,78 @@ function handleResponse(data) {
     moleculeState.bonds = data.bonds;
     moleculeState.assembly_instructions = data.assembly_instructions;
     moleculeState.isLoaded = true;
-    moleculeState.numChains = 10; // default
+    moleculeState.numChains = getDefaultChainCount(data.atoms.length);
+    moleculeState.lowDetailMode = document.getElementById('lowDetailMode')?.checked === true;
     
     // Display molecular data in right sidebar
     displayMolecularData(data);
     
     onDataReady();
+}
+
+function cleanupScene() {
+    if (currentAnimationId !== null) {
+        cancelAnimationFrame(currentAnimationId);
+        currentAnimationId = null;
+    }
+    if (currentRenderer) {
+        currentRenderer.dispose();
+        if (currentRenderer.domElement && currentRenderer.domElement.parentNode) {
+            currentRenderer.domElement.parentNode.removeChild(currentRenderer.domElement);
+        }
+        currentRenderer = null;
+    }
+    activeCamera = null;
+    freeCameraState.lastTime = null;
+}
+
+function getSphereGeometry(radius, detail) {
+    const key = `${radius.toFixed(4)}:${detail}`;
+    if (!sphereGeometryCache.has(key)) {
+        sphereGeometryCache.set(key, new THREE.SphereGeometry(radius, detail, detail));
+    }
+    return sphereGeometryCache.get(key);
+}
+
+function getShellGeometry(radius, detail) {
+    const key = `${radius.toFixed(4)}:${detail}`;
+    if (!shellGeometryCache.has(key)) {
+        shellGeometryCache.set(key, new THREE.SphereGeometry(radius, detail, detail));
+    }
+    return shellGeometryCache.get(key);
+}
+
+function getShellMaterial(symbol) {
+    if (!shellMaterialCache.has(symbol)) {
+        const base = standardAtomDict[symbol] || standardAtomDict['Default'];
+        const shellMaterial = base.clone();
+        shellMaterial.transparent = true;
+        shellMaterial.opacity = 0.18;
+        shellMaterial.depthWrite = false;
+        shellMaterial.side = THREE.DoubleSide;
+        shellMaterialCache.set(symbol, shellMaterial);
+    }
+    return shellMaterialCache.get(symbol);
+}
+
+function getSphereDetail(atomCount, lowDetail = false) {
+    if (atomCount > 800) return lowDetail ? 4 : 8;
+    if (atomCount > 400) return lowDetail ? 6 : 10;
+    if (atomCount > 200) return lowDetail ? 8 : 12;
+    return lowDetail ? 12 : 16;
+}
+
+function getBondGeometry() {
+    if (!bondGeometry) {
+        bondGeometry = new THREE.CylinderGeometry(0.1, 0.1, 1, 6);
+    }
+    return bondGeometry;
+}
+
+function getDefaultChainCount(atomCount) {
+    if (atomCount > 250) return 2;
+    if (atomCount > 120) return 3;
+    return 10;
 }
 
 function showCommunityEntries(entries, message, autoLoad = false) {
@@ -354,6 +442,7 @@ function displayMolecularData(data) {
 function onDataReady() {
     const container = document.getElementById('scene-container');
     if (!container) return;
+    cleanupScene();
     container.innerHTML = ''; 
     hideLoading();
     document.getElementById('error-message').style.display = 'none';
@@ -364,8 +453,11 @@ function onDataReady() {
     camera.position.set(0, 5, 15);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const deviceRatio = Math.min(window.devicePixelRatio || 1, moleculeState.atoms.length > 300 ? 1 : 1.5);
+    renderer.setPixelRatio(deviceRatio);
     renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(renderer.domElement);
+    currentRenderer = renderer;
 
     setActiveCamera(camera);
     const mainGroup = new THREE.Group();
@@ -393,7 +485,7 @@ function onDataReady() {
     finalizeScene(mainGroup, scene);
 
     function animate(time) {
-        requestAnimationFrame(animate);
+        currentAnimationId = requestAnimationFrame(animate);
         updateCameraMovement(time);
         renderer.render(scene, camera);
     }
@@ -402,17 +494,19 @@ function onDataReady() {
 
 function renderSingleMonomer(group, atoms, bonds) {
     const mode = document.getElementById('displayMode').value;
+    const lowDetail = moleculeState.lowDetailMode;
+    const sphereDetail = getSphereDetail(atoms.length, lowDetail);
     atoms.forEach(atom => {
         const baseRadius = (standardRadiiDict[atom.symbol] || standardRadiiDict["Default"]) * 0.3;
         const atomMaterial = standardAtomDict[atom.symbol] || standardAtomDict["Default"];
 
         // Render the solid atom sphere always.
-        const coreGeometry = new THREE.SphereGeometry(baseRadius, 32, 32);
+        const coreGeometry = getSphereGeometry(baseRadius, sphereDetail);
         const coreMesh = new THREE.Mesh(coreGeometry, atomMaterial);
         coreMesh.position.set(atom.x, atom.y, atom.z);
         group.add(coreMesh);
 
-        if (atom.charge && atom.charge !== 0) {
+        if (!lowDetail && atom.charge && atom.charge !== 0) {
             const chargeText = formatChargeSymbol(atom.charge);
             const label = createChargeLabel(`${atom.symbol}${chargeText}`);
             label.position.copy(coreMesh.position);
@@ -423,13 +517,8 @@ function renderSingleMonomer(group, atoms, bonds) {
         // Space-filling mode adds a transparent outer shell.
         if (mode === 'space-filling') {
             const shellRadius = (standardRadiiDict[atom.symbol] || standardRadiiDict["Default"]);
-            const shellMaterial = atomMaterial.clone();
-            shellMaterial.transparent = true;
-            shellMaterial.opacity = 0.18;
-            shellMaterial.depthWrite = false;
-            shellMaterial.side = THREE.DoubleSide;
-
-            const shellGeometry = new THREE.SphereGeometry(shellRadius, 32, 32);
+            const shellMaterial = getShellMaterial(atom.symbol);
+            const shellGeometry = getShellGeometry(shellRadius, sphereDetail);
             const shellMesh = new THREE.Mesh(shellGeometry, shellMaterial);
             shellMesh.position.copy(coreMesh.position);
             group.add(shellMesh);
@@ -473,6 +562,7 @@ function getMoleculeSettings() {
 
     return {
         omitHydrogens: document.getElementById('omitHydrogens').checked,
+        lowDetailMode: document.getElementById('lowDetailMode').checked,
         algorithms: Array.from(document.querySelectorAll('#algorithms input:checked')).map(cb => cb.value),
         moleculeData: moleculeData,
         inputType: inputType,
@@ -488,6 +578,7 @@ function triggerAutoRender() {
         lastRenderedSettings.inputType === data.inputType &&
         JSON.stringify(lastRenderedSettings.algorithms.sort()) === JSON.stringify(data.algorithms.sort()) &&
         lastRenderedSettings.omitHydrogens === data.omitHydrogens &&
+        lastRenderedSettings.lowDetailMode === data.lowDetailMode &&
         lastRenderedSettings.displayMode === data.displayMode) {
         return;
     }
@@ -741,10 +832,10 @@ function createBond(vStart, vEnd, type = 'SINGLE') {
 
 function createSingleBond(vStart, vEnd) {
     const dist = vStart.distanceTo(vEnd);
-    const geom = new THREE.CylinderGeometry(0.1, 0.1, dist, 8);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x999999 });
-    const mesh = new THREE.Mesh(geom, mat);
+    const geom = getBondGeometry();
+    const mesh = new THREE.Mesh(geom, standardBondMaterial);
     mesh.position.copy(vStart).add(vEnd).multiplyScalar(0.5);
+    mesh.scale.set(1, dist, 1);
     mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), vEnd.clone().sub(vStart).normalize());
     return mesh;
 }
@@ -772,15 +863,7 @@ function createAromaticBond(vStart, vEnd) {
     group.add(createSingleBond(vStart, vEnd));
     const points = [vStart.clone(), vEnd.clone()];
     const geom = new THREE.BufferGeometry().setFromPoints(points);
-    const mat = new THREE.LineDashedMaterial({
-        color: 0x999999,
-        dashSize: 0.15,
-        gapSize: 0.1,
-        linewidth: 1,
-        transparent: true,
-        opacity: 0.85
-    });
-    const line = new THREE.Line(geom, mat);
+    const line = new THREE.Line(geom, aromaticBondMaterial);
     line.computeLineDistances();
     group.add(line);
     return group;
@@ -789,15 +872,7 @@ function createAromaticBond(vStart, vEnd) {
 function createIonicLink(vStart, vEnd) {
     const points = [vStart.clone(), vEnd.clone()];
     const geom = new THREE.BufferGeometry().setFromPoints(points);
-    const mat = new THREE.LineDashedMaterial({
-        color: 0x2f76d9,
-        dashSize: 0.2,
-        gapSize: 0.1,
-        linewidth: 1,
-        transparent: true,
-        opacity: 0.9
-    });
-    const line = new THREE.Line(geom, mat);
+    const line = new THREE.Line(geom, ionicLinkMaterial);
     line.computeLineDistances();
     return line;
 }
