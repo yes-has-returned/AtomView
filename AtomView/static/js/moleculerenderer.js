@@ -588,7 +588,7 @@ function triggerAutoRender() {
         hideCommunityEntries();
         return;
     }
-    
+
     if (data.inputType === "name") {
         loadMoleculeByName(data.moleculeData, data.algorithms);
         loadCommunityEntriesByName(data.moleculeData, false);
