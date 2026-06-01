@@ -5,7 +5,6 @@ import requests
 import glypy
 from glypy.algorithms import subtree_search
 import re
-import sqlite3
 try:
     import openbabel
     OPENBABEL_AVAILABLE = True
@@ -301,127 +300,7 @@ def identify_polymer_endpoints(smiles):
         }
     return None
 
-def insert_community_sourced(name, smiles):
-    con = sqlite3.connect('AtomView/database_files/community_database.db')
-    cur = con.cursor()
-    cur.execute("INSERT INTO community_molecules (name, [smiles-code], upvotes, downvotes) VALUES (?, ?, 0, 0)", (name, smiles))
-    con.commit()
-    cur.close()
-    con.close()
 
-
-def query_community_entries(name):
-    con = sqlite3.connect('AtomView/database_files/community_database.db')
-    cur = con.cursor()
-    cur.execute(
-        "SELECT rowid AS id, name, [smiles-code] AS smiles, upvotes, downvotes FROM community_molecules WHERE name = ? COLLATE NOCASE",
-        (name,)
-    )
-    rows = cur.fetchall()
-    cur.close()
-    con.close()
-
-    entries = [
-        {
-            "id": row[0],
-            "name": row[1],
-            "smiles": row[2],
-            "upvotes": row[3],
-            "downvotes": row[4],
-            "score": row[3] - row[4]
-        }
-        for row in rows
-    ]
-    entries.sort(key=lambda entry: (entry["score"], entry["upvotes"]), reverse=True)
-    return entries
-
-
-def _ensure_votes_table():
-    con = sqlite3.connect('AtomView/database_files/community_database.db')
-    cur = con.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS community_votes (
-            entry_rowid INTEGER,
-            voter_id TEXT,
-            vote TEXT,
-            UNIQUE(entry_rowid, voter_id)
-        )
-        """
-    )
-    con.commit()
-    cur.close()
-    con.close()
-
-
-def adjust_community_vote(entry_id, voter_id, vote):
-    """
-    Enforce one vote per `voter_id` per community entry.
-    `vote` may be 'up', 'down' or 'none' (to remove vote).
-    Returns current up/down counts and stored vote for this voter.
-    """
-    if vote not in ('up', 'down', 'none'):
-        raise ValueError('Invalid vote value')
-
-    _ensure_votes_table()
-    con = sqlite3.connect('AtomView/database_files/community_database.db')
-    cur = con.cursor()
-
-    cur.execute("SELECT vote FROM community_votes WHERE entry_rowid = ? AND voter_id = ?", (entry_id, voter_id))
-    row = cur.fetchone()
-    prev = row[0] if row else None
-
-    # No-op if attempting to set same vote again
-    if prev == vote and vote in ('up', 'down'):
-        # fetch counts
-        cur.execute("SELECT upvotes, downvotes FROM community_molecules WHERE rowid = ?", (entry_id,))
-        counts = cur.fetchone()
-        cur.close()
-        con.close()
-        return {"upvotes": counts[0], "downvotes": counts[1], "vote": prev}
-
-    # Remove vote
-    if vote == 'none':
-        if prev is None:
-            # nothing to do
-            pass
-        else:
-            cur.execute("DELETE FROM community_votes WHERE entry_rowid = ? AND voter_id = ?", (entry_id, voter_id))
-            if prev == 'up':
-                cur.execute("UPDATE community_molecules SET upvotes = MAX(0, upvotes - 1) WHERE rowid = ?", (entry_id,))
-            else:
-                cur.execute("UPDATE community_molecules SET downvotes = MAX(0, downvotes - 1) WHERE rowid = ?", (entry_id,))
-
-    else:
-        # Add new vote
-        if prev is None:
-            cur.execute("INSERT OR REPLACE INTO community_votes (entry_rowid, voter_id, vote) VALUES (?, ?, ?)", (entry_id, voter_id, vote))
-            if vote == 'up':
-                cur.execute("UPDATE community_molecules SET upvotes = upvotes + 1 WHERE rowid = ?", (entry_id,))
-            else:
-                cur.execute("UPDATE community_molecules SET downvotes = downvotes + 1 WHERE rowid = ?", (entry_id,))
-        else:
-            # switch vote
-            cur.execute("UPDATE community_votes SET vote = ? WHERE entry_rowid = ? AND voter_id = ?", (vote, entry_id, voter_id))
-            if vote == 'up':
-                cur.execute("UPDATE community_molecules SET upvotes = upvotes + 1, downvotes = MAX(0, downvotes - 1) WHERE rowid = ?", (entry_id,))
-            else:
-                cur.execute("UPDATE community_molecules SET downvotes = downvotes + 1, upvotes = MAX(0, upvotes - 1) WHERE rowid = ?", (entry_id,))
-
-    con.commit()
-
-    # fetch updated counts
-    cur.execute("SELECT upvotes, downvotes FROM community_molecules WHERE rowid = ?", (entry_id,))
-    counts = cur.fetchone()
-
-    # determine stored vote for this voter
-    cur.execute("SELECT vote FROM community_votes WHERE entry_rowid = ? AND voter_id = ?", (entry_id, voter_id))
-    vrow = cur.fetchone()
-    stored_vote = vrow[0] if vrow else None
-
-    cur.close()
-    con.close()
-    return {"upvotes": counts[0], "downvotes": counts[1], "vote": stored_vote}
 
 
 def validate_smiles(smiles):
