@@ -6,9 +6,22 @@ let moleculeState = {
     bonds: [],
     assembly_instructions: [],
     isLoaded: false,
-    numChains: 10,
+    numChains: 1,
     lowDetailMode: false
 };
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let previousHighlightedObj = null; 
+let originalColor = null;
+
+const atomTooltip = document.createElement('div');
+Object.assign(atomTooltip.style, {
+    position: 'absolute', display: 'none', backgroundColor: 'rgba(255,255,255,0.95)',
+    padding: '10px', borderRadius: '5px', pointerEvents: 'none', zIndex: '1000',
+    border: '1px solid #ccc', boxShadow: '0 2px 5px rgba(0,0,0,0.2)'
+});
+document.body.appendChild(atomTooltip);
 
 let lastRenderedSettings = null;
 let communityVoteState = {};
@@ -71,23 +84,197 @@ try {
 
 // --- API FETCHING ---
 
-async function loadMoleculeByName(name, algorithms) {
+async function fetchJson(url, options = {}) {
+    const response = await fetch(url, options);
+    const text = await response.text();
+    if (!text || !text.trim()) {
+        throw new Error(`Empty response from server (${response.status})`);
+    }
+
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch (err) {
+        throw new Error(`Invalid JSON response from ${url}: ${text}`);
+    }
+
+    return { response, data };
+}
+
+async function loadMoleculeByName(name, algorithms, forcePolymerization) {
     const methods = algorithms.length > 0 ? algorithms.join(',') : 'PubChem,OPSIN';
     showLoading();
     try {
-        const response = await fetch(`/renderbackend/name?name=${encodeURIComponent(name)}&methods=${methods}`);
-        const data = await response.json();
+        const query = new URLSearchParams({
+            name,
+            methods,
+            force_polymerization: String(forcePolymerization)
+        });
+        const { response, data } = await fetchJson(`/renderbackend/name?${query.toString()}`);
+        if (!response.ok) {
+            handleErr(data.error || `Request failed with status ${response.status}`);
+            return;
+        }
         handleResponse(data);
     } catch (e) { handleErr(e); }
 }
 
-async function loadMoleculeBySmiles(smiles) {
+async function loadMoleculeBySmiles(smiles, forcePolymerization) {
     showLoading();
     try {
-        const response = await fetch(`/renderbackend/smiles?smiles=${encodeURIComponent(smiles)}`);
-        const data = await response.json();
+        const query = new URLSearchParams({
+            smiles,
+            force_polymerization: String(forcePolymerization)
+        });
+        const { response, data } = await fetchJson(`/renderbackend/smiles?${query.toString()}`);
+        if (!response.ok) {
+            handleErr(data.error || `Request failed with status ${response.status}`);
+            return;
+        }
         handleResponse(data);
     } catch (e) { handleErr(e); }
+}
+
+function calculateBondAngles(atom, neighbors) {
+    if (!atom || !Array.isArray(neighbors) || neighbors.length < 2) {
+        return [];
+    }
+
+    const origin = new THREE.Vector3(atom.x, atom.y, atom.z);
+    const vectors = neighbors.map(neighbor => {
+        const pos = new THREE.Vector3(neighbor.x, neighbor.y, neighbor.z);
+        return { neighbor, vector: pos.sub(origin) };
+    });
+
+    const angles = [];
+    for (let i = 0; i < vectors.length; i += 1) {
+        for (let j = i + 1; j < vectors.length; j += 1) {
+            const v1 = vectors[i].vector.clone().normalize();
+            const v2 = vectors[j].vector.clone().normalize();
+            const dot = Math.min(1, Math.max(-1, v1.dot(v2)));
+            const angleDeg = Math.acos(dot) * (180 / Math.PI);
+            angles.push({
+                atoms: [vectors[i].neighbor, vectors[j].neighbor],
+                angle: angleDeg
+            });
+        }
+    }
+    return angles;
+}
+
+async function fetchHighlightedAtomData(atomID) {
+    if (atomID === undefined || atomID === null) {
+        return null;
+    }
+
+    const atom = moleculeState.atoms.find(entry => entry.id === atomID);
+    if (!atom) {
+        return null;
+    }
+
+    const neighbors = moleculeState.bonds
+        .filter(bond => bond.start === atomID || bond.end === atomID)
+        .map(bond => moleculeState.atoms.find(entry => entry.id === (bond.start === atomID ? bond.end : bond.start)))
+        .filter(Boolean);
+
+    return {
+        id: atom.id,
+        name: atom.name || atom.symbol,
+        symbol: atom.symbol,
+        atomicWeight: atom.mass,
+        bondCount: neighbors.length,
+        charge: atom.charge,
+        bondNeighbors: neighbors,
+        bondAngles: calculateBondAngles(atom, neighbors)
+    };
+}
+
+function setupInteraction(scene, camera, renderer) {
+    renderer.domElement.addEventListener('click', (event) => {
+        const rect = renderer.domElement.getBoundingClientRect();
+        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(scene.children, true);
+        const atomIntersect = intersects.find(intersection => intersection.object.userData?.atomId !== undefined);
+
+        if (atomIntersect) {
+            highlightAtom(atomIntersect.object, event);
+        } else {
+            clearHighlight();
+        }
+    });
+
+    renderer.domElement.addEventListener('pointerleave', () => {
+        clearHighlight();
+    });
+}
+
+function highlightAtom(mesh, event) {
+    if (!mesh?.material) {
+        return;
+    }
+
+    if (previousHighlightedObj && previousHighlightedObj !== mesh) {
+        previousHighlightedObj.material.color.copy(originalColor || previousHighlightedObj.material.color);
+    }
+
+    if (previousHighlightedObj === mesh) {
+        if (originalColor) {
+            mesh.material.color.copy(originalColor);
+        }
+        previousHighlightedObj = null;
+        atomTooltip.style.display = 'none';
+        return;
+    }
+
+    originalColor = mesh.material.color.clone();
+    previousHighlightedObj = mesh;
+    mesh.material.color.offsetHSL(0, 0, 0.25);
+
+    const atomId = mesh.userData?.atomId ?? mesh.userData?.atom?.id;
+    if (atomId === undefined) {
+        atomTooltip.style.display = 'none';
+        return;
+    }
+
+    fetchHighlightedAtomData(atomId).then((data) => {
+        if (!data || previousHighlightedObj !== mesh) {
+            return;
+        }
+
+        let bondAngleHtml = '';
+        if (Array.isArray(data.bondAngles) && data.bondAngles.length > 0) {
+            bondAngleHtml = '<br><strong>Bond angles:</strong><br>' +
+                data.bondAngles.map(item => {
+                    const [a, b] = item.atoms;
+                    const labelA = `${a.symbol}${a.id}`;
+                    const labelB = `${b.symbol}${b.id}`;
+                    return `${labelA} — ${labelB}: ${item.angle.toFixed(1)}°`;
+                }).join('<br>');
+        } else if (data.bondCount === 1) {
+            bondAngleHtml = '<br><em>Only one bonded neighbor; no angle to display.</em>';
+        }
+
+        const atomLabel = `${data.symbol}${data.id}`;
+        atomTooltip.innerHTML = `
+            <strong>${atomLabel} — ${data.name} (${data.symbol})</strong><br>
+            Weight: ${data.atomicWeight}u<br>
+            Bonds: ${data.bondCount}${bondAngleHtml}
+        `;
+        atomTooltip.style.display = 'block';
+        atomTooltip.style.left = `${event.clientX + 10}px`;
+        atomTooltip.style.top = `${event.clientY + 10}px`;
+    });
+}
+
+function clearHighlight() {
+    if (previousHighlightedObj) {
+        previousHighlightedObj.material.color.copy(originalColor || previousHighlightedObj.material.color);
+        previousHighlightedObj = null;
+    }
+    atomTooltip.style.display = 'none';
 }
 
 function handleResponse(data) {
@@ -105,11 +292,29 @@ function handleResponse(data) {
     if (!communityPanelVisible) {
         hideCommunityEntries();
     }
-    moleculeState.atoms = data.atoms;
-    moleculeState.bonds = data.bonds;
+
+    updateProgress(35, 'Molecule data received. Preparing render...');
+
+    if (!Array.isArray(data.atoms) || data.atoms.length === 0) {
+        showError('Render failed: no atom coordinates received.', false);
+        return;
+    }
+    if (!Array.isArray(data.bonds)) {
+        data.bonds = [];
+    }
+    if (!Array.isArray(data.assembly_instructions) || data.assembly_instructions.length === 0) {
+        data.assembly_instructions = [{ type: 'monomer', is_polymer: false }];
+    }
+
+    moleculeState.atoms = data.atoms.filter(atom => atom && typeof atom.x === 'number' && typeof atom.y === 'number' && typeof atom.z === 'number');
+    moleculeState.bonds = data.bonds.filter(bond => {
+        return bond && Number.isInteger(bond.start) && Number.isInteger(bond.end) &&
+            bond.start >= 0 && bond.end >= 0 &&
+            bond.start < data.atoms.length && bond.end < data.atoms.length;
+    });
     moleculeState.assembly_instructions = data.assembly_instructions;
     moleculeState.isLoaded = true;
-    moleculeState.numChains = getDefaultChainCount(data.atoms.length);
+    moleculeState.numChains = getDefaultChainCount(moleculeState.atoms.length);
     moleculeState.lowDetailMode = document.getElementById('lowDetailMode')?.checked === true;
     
     // Display molecular data in right sidebar
@@ -119,6 +324,7 @@ function handleResponse(data) {
 }
 
 function cleanupScene() {
+    clearHighlight();
     if (currentAnimationId !== null) {
         cancelAnimationFrame(currentAnimationId);
         currentAnimationId = null;
@@ -241,9 +447,21 @@ function showCommunityEntries(entries, message, autoLoad = false) {
         voteRow.appendChild(upButton);
         voteRow.appendChild(downButton);
 
+        const statusLine = document.createElement('div');
+        statusLine.className = 'vote-status';
+        statusLine.textContent = '';
+        statusLine.style.display = 'none';
+
         row.appendChild(header);
         row.appendChild(voteRow);
+        row.appendChild(statusLine);
         list.appendChild(row);
+
+        const currentVote = entry.user_vote || null;
+        communityVoteState[entry.id] = currentVote;
+        if (currentVote) {
+            updateCommunityEntryButtons(entry.id);
+        }
     });
 
     suggestions.style.display = 'block';
@@ -265,36 +483,95 @@ function selectCommunityEntry(entryId, smiles) {
     document.querySelectorAll('.community-entry').forEach((el) => {
         el.classList.toggle('selected', el.dataset.entryId === String(entryId));
     });
-    loadMoleculeBySmiles(smiles);
+
+    const settings = getMoleculeSettings();
+    const polymerMatch = smiles.trim().match(/^\s*\[([^\]]+)\]n\s*$/i);
+    const forcePolymerization = settings.forcePolymerization || Boolean(polymerMatch);
+    loadMoleculeBySmiles(smiles, forcePolymerization);
+}
+
+function setCommunityEntryButtonsEnabled(entryId, enabled) {
+    const entryRow = document.querySelector(`.community-entry[data-entry-id="${entryId}"]`);
+    if (!entryRow) return;
+    entryRow.querySelectorAll('.vote-button').forEach((button) => {
+        button.disabled = !enabled;
+    });
 }
 
 async function handleCommunityVote(entryId, voteType) {
     const previousVote = communityVoteState[entryId] || null;
     const newVote = previousVote === voteType ? 'none' : voteType;
+    const entryRow = document.querySelector(`.community-entry[data-entry-id="${entryId}"]`);
+    const upCountEl = entryRow?.querySelector('.vote-button.upvote .vote-count');
+    const downCountEl = entryRow?.querySelector('.vote-button.downvote .vote-count');
+    const previousUp = upCountEl ? Number(upCountEl.textContent) : 0;
+    const previousDown = downCountEl ? Number(downCountEl.textContent) : 0;
+    let optimisticUp = previousUp;
+    let optimisticDown = previousDown;
 
-    try {
-        const response = await fetch('/renderbackend/community/vote', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                entry_id: Number(entryId),
-                vote: newVote,
-                voter_id: voterId
-            })
-        });
-        const data = await response.json();
-        if (!response.ok) {
-            console.error('Vote request failed', data);
-            return;
+    if (newVote === 'none') {
+        if (previousVote === 'up') optimisticUp = Math.max(0, optimisticUp - 1);
+        else if (previousVote === 'down') optimisticDown = Math.max(0, optimisticDown - 1);
+    } else if (previousVote === null) {
+        if (newVote === 'up') optimisticUp += 1;
+        else optimisticDown += 1;
+    } else if (previousVote !== newVote) {
+        if (newVote === 'up') {
+            optimisticUp += 1;
+            optimisticDown = Math.max(0, optimisticDown - 1);
+        } else {
+            optimisticDown += 1;
+            optimisticUp = Math.max(0, optimisticUp - 1);
         }
-
-        // server returns stored vote for this voter
-        communityVoteState[entryId] = data.vote || null;
-        updateCommunityEntryUI(entryId, data.upvotes, data.downvotes);
-        updateCommunityEntryButtons(entryId);
-    } catch (error) {
-        console.error('Failed to submit community vote:', error);
     }
+
+    const statusNode = entryRow?.querySelector('.vote-status');
+    communityVoteState[entryId] = newVote === 'none' ? null : newVote;
+    updateCommunityEntryUI(entryId, optimisticUp, optimisticDown);
+    updateCommunityEntryButtons(entryId);
+    setCommunityEntryButtonsEnabled(entryId, false);
+    entryRow?.classList.add('vote-pending');
+    if (statusNode) {
+        statusNode.textContent = 'Voting...';
+        statusNode.style.display = 'block';
+    }
+
+    setTimeout(async () => {
+        try {
+            const { response, data } = await fetchJson('/renderbackend/community/vote', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    entry_id: Number(entryId),
+                    vote: newVote,
+                    voter_id: voterId
+                })
+            });
+            if (!response.ok) {
+                console.error('Vote request failed', data);
+                communityVoteState[entryId] = previousVote;
+                updateCommunityEntryUI(entryId, previousUp, previousDown);
+                updateCommunityEntryButtons(entryId);
+                return;
+            }
+
+            communityVoteState[entryId] = data.vote || null;
+            updateCommunityEntryUI(entryId, data.upvotes, data.downvotes);
+            updateCommunityEntryButtons(entryId);
+        } catch (error) {
+            console.error('Failed to submit community vote:', error);
+            communityVoteState[entryId] = previousVote;
+            updateCommunityEntryUI(entryId, previousUp, previousDown);
+            updateCommunityEntryButtons(entryId);
+        } finally {
+            if (statusNode) {
+                statusNode.textContent = '';
+                statusNode.style.display = 'none';
+            }
+            entryRow?.classList.remove('vote-pending');
+            setCommunityEntryButtonsEnabled(entryId, true);
+        }
+    }, 0);
 }
 
 function updateCommunityEntryUI(entryId, upvotes, downvotes) {
@@ -325,8 +602,12 @@ async function loadCommunityEntriesByName(name, autoLoad = false) {
 
     try {
             const url = `/renderbackend/community/entries?name=${encodeURIComponent(name)}` + (voterId ? `&voter_id=${encodeURIComponent(voterId)}` : '');
-            const response = await fetch(url);
-        const data = await response.json();
+            const { response, data } = await fetchJson(url);
+        if (!response.ok) {
+            console.error('Community entries request failed', data);
+            hideCommunityEntries();
+            return;
+        }
 
         if (data.community_entries && data.community_entries.length > 0) {
             showCommunityEntries(data.community_entries, 'Community entries available for this name. Select one to render it.', autoLoad);
@@ -356,12 +637,11 @@ async function submitCommunityEntry(event) {
     }
 
     try {
-        const response = await fetch('/renderbackend/community/add', {
+        const { response, data } = await fetchJson('/renderbackend/community/add', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, smiles })
         });
-        const data = await response.json();
 
         if (response.ok) {
             status.style.display = 'block';
@@ -388,10 +668,81 @@ function syncCommunityName() {
 }
 
 function displayMolecularData(data) {
-    // Display molecular formula
+    // Display molecular / alternate formulas and enable cycling on click
     const formulaDisplay = document.getElementById('molecularFormulaDisplay');
-    if (data.molecular_formula) {
-        formulaDisplay.textContent = data.molecular_formula;
+    const formulaLabel = document.getElementById('molecularFormulaLabel');
+
+    const formulas = {
+        molecular: data.molecular_formula.replace(/(\d+)/g, "<sub>$1</sub>") || '',
+        empirical: data.empirical_formula.replace(/(\d+)/g, "<sub>$1</sub>") || '',
+        condensed: data.condensed_formula.replace(/(\d+)/g, "<sub>$1</sub>") || '',
+        smiles: data.smiles || data.smiles_string || ''
+    };
+
+    const labelFor = {
+        molecular: 'Molecular Formula',
+        empirical: 'Empirical Formula',
+        condensed: 'Condensed Formula',
+        smiles: 'SMILES Formula'
+    };
+
+    const order = ['molecular', 'empirical', 'condensed', 'smiles'];
+    const available = order.filter(k => formulas[k] && String(formulas[k]).trim());
+
+    const parentSection = formulaDisplay ? formulaDisplay.closest('.info-section') : null;
+
+    function updateFormulaView(availList, idx) {
+        const key = availList[idx];
+        const val = (formulaDisplay._formulaData && formulaDisplay._formulaData[key]) || '';
+        formulaDisplay.innerHTML = val || '-';
+        if (formulaLabel) formulaLabel.textContent = labelFor[key] || 'Formula';
+    }
+
+    if (available.length === 0) {
+        formulaDisplay.textContent = '-';
+        if (formulaLabel) formulaLabel.textContent = 'Formula';
+        if (parentSection) parentSection.style.cursor = 'default';
+        formulaDisplay.style.cursor = 'default';
+        formulaDisplay.removeAttribute('role');
+        formulaDisplay.removeAttribute('aria-label');
+        formulaDisplay.removeAttribute('title');
+        formulaDisplay.tabIndex = -1;
+        // clear previous state
+        formulaDisplay._formulaData = {};
+        formulaDisplay._available = [];
+        formulaDisplay._index = 0;
+    } else {
+        // initialize element state (reset on every update)
+        formulaDisplay._formulaData = formulas;
+        formulaDisplay._available = available;
+        formulaDisplay._index = 0;
+        updateFormulaView(available, 0);
+        if (parentSection) parentSection.style.cursor = 'pointer';
+        formulaDisplay.style.cursor = 'pointer';
+        formulaDisplay.setAttribute('role', 'button');
+        formulaDisplay.setAttribute('aria-label', 'Cycle formula formats');
+        formulaDisplay.setAttribute('title', 'Click or press Enter/Space to cycle formula formats');
+        formulaDisplay.tabIndex = 0;
+
+        const attachTo = parentSection || formulaDisplay;
+        if (!attachTo._formulaClickAttached) {
+            const doCycle = (e) => {
+                // ignore when no available
+                const avail = formulaDisplay._available || available;
+                if (!avail || avail.length === 0) return;
+                formulaDisplay._index = (Number(formulaDisplay._index) + 1) % avail.length;
+                updateFormulaView(avail, formulaDisplay._index);
+            };
+
+            attachTo.addEventListener('click', doCycle);
+            attachTo.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    doCycle();
+                }
+            });
+            attachTo._formulaClickAttached = true;
+        }
     }
     
     // Display 2D structure image
@@ -444,7 +795,7 @@ function onDataReady() {
     if (!container) return;
     cleanupScene();
     container.innerHTML = ''; 
-    hideLoading();
+    showLoading('Rendering molecule...', 40);
     document.getElementById('error-message').style.display = 'none';
 
     const scene = new THREE.Scene();
@@ -472,6 +823,8 @@ function onDataReady() {
         renderSingleMonomer(mainGroup, moleculeState.atoms, moleculeState.bonds);
     }
 
+    setupInteraction(scene, camera, renderer);
+
     // Update UI for polymer settings
     const polymerSettings = document.getElementById('polymer-settings');
     if (instr && instr.is_polymer) {
@@ -483,6 +836,8 @@ function onDataReady() {
     }
 
     finalizeScene(mainGroup, scene);
+    updateProgress(100, 'Render complete');
+    hideLoading();
 
     function animate(time) {
         currentAnimationId = requestAnimationFrame(animate);
@@ -493,10 +848,26 @@ function onDataReady() {
 }
 
 function renderSingleMonomer(group, atoms, bonds) {
+    if (!Array.isArray(atoms) || atoms.length === 0) {
+        console.error('renderSingleMonomer: no atoms to render.');
+        return;
+    }
     const mode = document.getElementById('displayMode').value;
     const lowDetail = moleculeState.lowDetailMode;
     const sphereDetail = getSphereDetail(atoms.length, lowDetail);
+    const totalRenderSteps = Math.max(1, atoms.length + bonds.length);
+    let processedSteps = 0;
+    const updateStep = () => {
+        processedSteps += 1;
+        if (processedSteps % 5 === 0 || processedSteps === totalRenderSteps) {
+            updateProgress(40 + Math.round(50 * processedSteps / totalRenderSteps), 'Rendering molecule...');
+        }
+    };
     atoms.forEach(atom => {
+        if (!atom || typeof atom.x !== 'number' || typeof atom.y !== 'number' || typeof atom.z !== 'number') {
+            console.warn('Skipping invalid atom during render:', atom);
+            return;
+        }
         const baseRadius = (standardRadiiDict[atom.symbol] || standardRadiiDict["Default"]) * 0.3;
         const atomMaterial = standardAtomDict[atom.symbol] || standardAtomDict["Default"];
 
@@ -504,6 +875,8 @@ function renderSingleMonomer(group, atoms, bonds) {
         const coreGeometry = getSphereGeometry(baseRadius, sphereDetail);
         const coreMesh = new THREE.Mesh(coreGeometry, atomMaterial);
         coreMesh.position.set(atom.x, atom.y, atom.z);
+        coreMesh.userData.atomId = atom.id;
+        coreMesh.userData.atom = atom;
         group.add(coreMesh);
 
         if (!lowDetail && atom.charge && atom.charge !== 0) {
@@ -523,14 +896,26 @@ function renderSingleMonomer(group, atoms, bonds) {
             shellMesh.position.copy(coreMesh.position);
             group.add(shellMesh);
         }
+        updateStep();
     });
 
     bonds.forEach(bond => {
-        const v1 = new THREE.Vector3(atoms[bond.start].x, atoms[bond.start].y, atoms[bond.start].z);
-        const v2 = new THREE.Vector3(atoms[bond.end].x, atoms[bond.end].y, atoms[bond.end].z);
+        if (!bond || typeof bond.start !== 'number' || typeof bond.end !== 'number') {
+            console.warn('Skipping invalid bond during render:', bond);
+            return;
+        }
+        const atomA = atoms[bond.start];
+        const atomB = atoms[bond.end];
+        if (!atomA || !atomB) {
+            console.warn('Skipping bond with missing atom indices:', bond);
+            return;
+        }
+        const v1 = new THREE.Vector3(atomA.x, atomA.y, atomA.z);
+        const v2 = new THREE.Vector3(atomB.x, atomB.y, atomB.z);
         const bondType = bond.type ? String(bond.type).toUpperCase() : 'SINGLE';
         const isIonicBond = bondType === 'IONIC';
         group.add(isIonicBond ? createIonicLink(v1, v2) : createBond(v1, v2, bondType));
+        updateStep();
     });
 
     renderIonicInteractions(group, atoms, bonds);
@@ -538,8 +923,19 @@ function renderSingleMonomer(group, atoms, bonds) {
 
 function renderPolymerChain(parentGroup, instr) {
     const atoms = moleculeState.atoms;
-    const head = new THREE.Vector3(atoms[instr.head_idx].x, atoms[instr.head_idx].y, atoms[instr.head_idx].z);
-    const tail = new THREE.Vector3(atoms[instr.tail_idx].x, atoms[instr.tail_idx].y, atoms[instr.tail_idx].z);
+    if (!Array.isArray(atoms) || atoms.length === 0) {
+        console.error('renderPolymerChain: no atoms available.');
+        return;
+    }
+    const headAtom = atoms[instr.head_idx];
+    const tailAtom = atoms[instr.tail_idx];
+    if (!headAtom || !tailAtom) {
+        console.warn('renderPolymerChain: invalid polymer indices, falling back to monomer render.', instr);
+        renderSingleMonomer(parentGroup, atoms, moleculeState.bonds);
+        return;
+    }
+    const head = new THREE.Vector3(headAtom.x, headAtom.y, headAtom.z);
+    const tail = new THREE.Vector3(tailAtom.x, tailAtom.y, tailAtom.z);
     const offset = new THREE.Vector3().subVectors(tail, head);
     const twist = instr.type === 'beta' ? Math.PI : 0.4;
 
@@ -556,13 +952,25 @@ function renderPolymerChain(parentGroup, instr) {
 
 function getMoleculeSettings() {
     const inputType = document.querySelector('input[name="input-type"]:checked').value;
-    const moleculeData = inputType === "name" ? 
+    let moleculeData = inputType === "name" ? 
         document.getElementById('moleculeName').value : 
         document.getElementById('smilesValue').value;
+
+    const forcePolymerizationInput = document.getElementById('forcePolymerization');
+    let forcePolymerization = forcePolymerizationInput ? forcePolymerizationInput.checked : false;
+
+    if (inputType === 'smiles') {
+        const polymerMatch = moleculeData.trim().match(/^\s*\[([^\]]+)\]n\s*$/i);
+        if (polymerMatch) {
+            moleculeData = polymerMatch[1];
+            forcePolymerization = true;
+        }
+    }
 
     return {
         omitHydrogens: document.getElementById('omitHydrogens').checked,
         lowDetailMode: document.getElementById('lowDetailMode').checked,
+        forcePolymerization,
         algorithms: Array.from(document.querySelectorAll('#algorithms input:checked')).map(cb => cb.value),
         moleculeData: moleculeData,
         inputType: inputType,
@@ -579,6 +987,7 @@ function triggerAutoRender() {
         JSON.stringify(lastRenderedSettings.algorithms.sort()) === JSON.stringify(data.algorithms.sort()) &&
         lastRenderedSettings.omitHydrogens === data.omitHydrogens &&
         lastRenderedSettings.lowDetailMode === data.lowDetailMode &&
+        lastRenderedSettings.forcePolymerization === data.forcePolymerization &&
         lastRenderedSettings.displayMode === data.displayMode) {
         return;
     }
@@ -590,11 +999,11 @@ function triggerAutoRender() {
     }
 
     if (data.inputType === "name") {
-        loadMoleculeByName(data.moleculeData, data.algorithms);
+        loadMoleculeByName(data.moleculeData, data.algorithms, data.forcePolymerization);
         loadCommunityEntriesByName(data.moleculeData, false);
     } else {
         hideCommunityEntries();
-        loadMoleculeBySmiles(data.moleculeData);
+        loadMoleculeBySmiles(data.moleculeData, data.forcePolymerization);
     }
 }
 
@@ -930,7 +1339,32 @@ function finalizeScene(group, scene) {
     scene.add(light);
 }
 
-function showLoading() { document.getElementById('loading-screen').style.display = 'block'; }
+function setLoadingMessage(message) {
+    const label = document.getElementById('progress-message');
+    if (label) label.textContent = String(message || 'Loading molecule...');
+}
+
+function setProgress(value, message) {
+    const progressBar = document.getElementById('progress-bar');
+    const progressText = document.getElementById('progress-text');
+    const normalized = Math.min(100, Math.max(0, Number(value) || 0));
+    if (progressBar) progressBar.style.width = `${normalized}%`;
+    if (progressText) progressText.textContent = message ? `${String(message)} (${Math.round(normalized)}%)` : `${Math.round(normalized)}%`;
+}
+
+function updateProgress(value, message) {
+    if (message) setLoadingMessage(message);
+    setProgress(value, message);
+}
+
+function showLoading(message = 'Loading molecule...', initialProgress = 0) {
+    const loading = document.getElementById('loading-screen');
+    if (!loading) return;
+    loading.style.display = 'block';
+    setLoadingMessage(message);
+    setProgress(initialProgress, message);
+}
+
 function hideLoading() { document.getElementById('loading-screen').style.display = 'none'; }
 function showError(m, allowRetry = true) {
     hideLoading();

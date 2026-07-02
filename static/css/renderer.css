@@ -1,19 +1,73 @@
 :root {
-  --sidebar-width: 250px;
-  --nav-height: 48px;
+  --sidebar-width: 20%;
+  --nav-height: 0px;
   --primary-dark: #333;
   --scroll-thumb: #d1d1d1;
   --scroll-hover: #bbb;
 }
 
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  min-height: 100vh;
+}
+
 /* 1. Sidebar Base */
+.loading-screen {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: none;
+  width: min(360px, calc(100% - 40px));
+  background: rgba(255, 255, 255, 0.96);
+  padding: 20px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  z-index: 10;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
+}
+.loading-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.loading-message {
+  font-weight: 700;
+  color: #222;
+  font-size: 0.95rem;
+}
+.loader-progress {
+  width: 100%;
+  height: 12px;
+  background: #ececec;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress-bar {
+  width: 0%;
+  height: 100%;
+  background: #4caf50;
+  transition: width 0.2s ease;
+}
+.progress-text {
+  font-size: 0.88rem;
+  color: #444;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 .sidebar {
   box-sizing: border-box;
   position: fixed;
   left: 0;
-  top: var(--nav-height);
+  top: 0;
   width: var(--sidebar-width);
-  height: calc(100% - var(--nav-height));
+  height: 100vh;
   background-color: white;
   z-index: 1000;
   overflow: visible; 
@@ -21,8 +75,18 @@
   transition: transform 0.3s ease;
 }
 
+#scene-container {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--sidebar-width);
+  right: var(--sidebar-width);
+  background-color: #ffffff;
+  overflow: hidden;
+}
+
 .sidebar.collapsed {
-  transform: translateX(calc(-1 * var(--sidebar-width)));
+  transform: translateX(-100%);
 }
 
 #sidebar .content .text-input {
@@ -194,7 +258,7 @@ details[open] summary::after {
   writing-mode: vertical-rl; text-orientation: mixed;
   transform: rotate(180deg); padding: 15px 8px;
   background: white; border: 1px solid #ddd; border-right: none;
-  cursor: pointer; border-radius: 5px 0 0 5px; z-index: -1;
+  cursor: pointer; border-radius: 5px 0 0 5px; z-index: 1001;
   display: flex; align-items: center; gap: 10px;
   box-shadow: -4px 0px 5px rgba(0, 0, 0, 0.1);
 }
@@ -229,7 +293,7 @@ details[open] summary::after {
 }
 
 .right-sidebar.collapsed {
-  transform: translateX(calc(1 * var(--sidebar-width)));
+  transform: translateX(100%);
 }
 
 .right-toggle-btn {
@@ -245,7 +309,7 @@ details[open] summary::after {
   border-left: none;
   cursor: pointer;
   border-radius: 5px 0 0 5px;
-  z-index: -1;
+  z-index: 1001;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -358,16 +422,17 @@ details[open] summary::after {
   background: rgba(200, 35, 35, 0.06);
 }
 
-.vote-button.active.upvote {
+.vote-button.active {
   color: #0a8d00;
   border-color: rgba(10, 141, 0, 0.35);
   background: rgba(10, 141, 0, 0.12);
 }
 
-.vote-button.active.downvote {
-  color: #c82323;
-  border-color: rgba(200, 35, 35, 0.35);
-  background: rgba(200, 35, 35, 0.12);
+.vote-status {
+  display: none;
+  margin-top: 0.5rem;
+  font-size: 12px;
+  color: #4a4a4a;
 }
 
 .vote-count {

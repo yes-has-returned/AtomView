@@ -1,4 +1,4 @@
-const CACHE_NAME = 'atomview-cache-v1';
+const CACHE_NAME = 'atomview-cache-v5';
 const PRECACHE_URLS = [
   '/',
   '/render',

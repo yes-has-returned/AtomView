@@ -1,5 +1,5 @@
 from rdkit import Chem
-from rdkit.Chem import AllChem
+from rdkit.Chem import AllChem, rdDepictor
 import pubchempy as pcp
 import requests
 import glypy
@@ -12,8 +12,8 @@ except ImportError:
     OPENBABEL_AVAILABLE = False
 
 class Atom:
-    def __init__(self, id, symbol, x, y, z, charge=0):
-        self.id = id
+    def __init__(self, atom_id, symbol, x, y, z, charge=0):
+        self.id = int(atom_id)
         self.symbol = symbol
         self.x = x
         self.y = y
@@ -28,6 +28,7 @@ def retrieve_smiles_pubchem(name):
         return None
 
 def generate_molecule_data(smiles, omit_hydrogens=False):
+    smiles = normalize_smiles(smiles)
     # Try RDKit with sanitization first
     mol = None
     sanitized = True
@@ -51,50 +52,63 @@ def generate_molecule_data(smiles, omit_hydrogens=False):
         mol = Chem.AddHs(mol)
     
     # Generate 3D Coordinates
+    embedding_failed = False
     try:
-        if AllChem.EmbedMolecule(mol, AllChem.ETKDG()) != 0:
-            AllChem.EmbedMolecule(mol, useRandomCoords=True)
-    except:
-        print("RDKit 3D embedding failed, trying OpenBabel")
-        if not OPENBABEL_AVAILABLE:
-            raise ValueError("3D embedding failed and OpenBabel not available.")
-        
-        # Fallback to OpenBabel for 3D
+        result = AllChem.EmbedMolecule(mol, AllChem.ETKDG())
+        if result != 0:
+            result = AllChem.EmbedMolecule(mol, useRandomCoords=True)
+            if result != 0:
+                embedding_failed = True
+    except Exception as embed_error:
+        print("RDKit 3D embedding failed, trying fallback:", embed_error)
+        embedding_failed = True
+
+    if mol.GetNumConformers() == 0:
+        embedding_failed = True
+
+    if embedding_failed:
+        if OPENBABEL_AVAILABLE:
+            print("Attempting OpenBabel fallback for 3D embedding")
+            try:
+                obConversion = openbabel.OBConversion()
+                obConversion.SetInAndOutFormats("smi", "mol")
+                obMol = openbabel.OBMol()
+                obConversion.ReadString(obMol, smiles)
+
+                if not omit_hydrogens:
+                    obMol.AddHydrogens()
+
+                builder = openbabel.OBBuilder()
+                builder.Build(obMol)
+
+                positions = []
+                for atom in openbabel.OBMolAtomIter(obMol):
+                    idx = atom.GetIdx()
+                    atom_id = int(idx)
+                    symbol = atom.GetType()
+                    charge = atom.GetFormalCharge() if hasattr(atom, 'GetFormalCharge') else 0
+                    pos = atom.GetVector()
+                    positions.append(Atom(atom_id, symbol, pos.GetX(), pos.GetY(), pos.GetZ(), charge))
+
+                bonds = []
+                for bond in openbabel.OBMolBondIter(obMol):
+                    start_idx = bond.GetBeginAtomIdx()
+                    end_idx = bond.GetEndAtomIdx()
+                    bond_type = bond.GetBondOrder()
+                    bonds.append((start_idx, end_idx, str(bond_type)))
+
+                print("Used OpenBabel for 3D embedding")
+                return positions, bonds
+            except Exception as e2:
+                print(f"OpenBabel 3D embedding failed: {e2}")
+
+        print("Falling back to 2D coordinate generation")
         try:
-            obConversion = openbabel.OBConversion()
-            obConversion.SetInAndOutFormats("smi", "mol")
-            obMol = openbabel.OBMol()
-            obConversion.ReadString(obMol, smiles)
-            
-            if not omit_hydrogens:
-                obMol.AddHydrogens()
-            
-            # Generate 3D
-            builder = openbabel.OBBuilder()
-            builder.Build(obMol)
-            
-            # Extract positions
-            positions = []
-            for atom in openbabel.OBMolAtomIter(obMol):
-                idx = atom.GetIdx()
-                symbol = atom.GetType()  # Approximate symbol
-                charge = atom.GetFormalCharge() if hasattr(atom, 'GetFormalCharge') else 0
-                pos = atom.GetVector()
-                positions.append(Atom(idx, symbol, pos.GetX(), pos.GetY(), pos.GetZ(), charge))
-            
-            # Extract bonds
-            bonds = []
-            for bond in openbabel.OBMolBondIter(obMol):
-                start_idx = bond.GetBeginAtomIdx()
-                end_idx = bond.GetEndAtomIdx()
-                bond_type = bond.GetBondOrder()
-                bonds.append((start_idx, end_idx, str(bond_type)))
-            
-            print("Used OpenBabel for 3D embedding")
-            return positions, bonds
-        
+            rdDepictor.Compute2DCoords(mol)
+            if mol.GetNumConformers() == 0:
+                raise ValueError("No conformer generated during 2D layout fallback.")
         except Exception as e2:
-            raise ValueError(f"3D embedding failed: {e2}")
+            raise ValueError(f"3D embedding failed and 2D fallback also failed: {e2}")
     
     # Try optimization only if sanitized
     if sanitized:
@@ -117,10 +131,11 @@ def generate_molecule_data(smiles, omit_hydrogens=False):
 
     for atom in mol.GetAtoms():
         idx = atom.GetIdx()
+        atom_id = int(idx)
         symbol = atom.GetSymbol()
         charge = atom.GetFormalCharge()
         pos = conf.GetAtomPosition(idx)
-        positions.append(Atom(idx, symbol, pos.x, pos.y, pos.z, charge))
+        positions.append(Atom(atom_id, symbol, pos.x, pos.y, pos.z, charge))
 
     # If the molecule contains disconnected fragments, place each fragment apart
     # so ionic compounds and salts do not render as overlapping atoms.
@@ -212,12 +227,12 @@ def retrieve_structure_glypy(name):
     }
 
 def parse_linkage_hints(hints):
-    # Regex breakdown:
-    # (\d)       -> Capture the first digit (The "Head")
-    # [,-]       -> Match a comma or hyphen separator
-    # (\d)       -> Capture the second digit (The "Tail")
-    # .*?        -> Any characters in between
-    # (alpha|beta) -> Capture the stereochemistry type
+    # Regex breakdown checklist:
+    # (\d)       -> Capture the first digit (The "Head") done
+    # [,-]       -> Match a comma or hyphen separator done
+    # (\d)       -> Capture the second digit (The "Tail") done
+    # .*?        -> Any characters in between done
+    # (alpha|beta) -> Capture the stereochemistry type done
     pattern = re.compile(r'(\d)[,-](\d).*?(alpha|beta)', re.IGNORECASE)
     
     parsed_results = []
@@ -298,16 +313,36 @@ def identify_polymer_endpoints(smiles):
             "head_idx": endpoints[0],
             "tail_idx": endpoints[-1] # Usually the furthest atom in the chain
         }
+    
+    # If no terminals found but molecule has reasonable size, use first and last atom
+    # This helps with cyclic or fully-substituted aromatics that don't have terminal atoms
+    if mol.GetNumAtoms() >= 5:
+        return {
+            "head_idx": 0,
+            "tail_idx": mol.GetNumAtoms() - 1
+        }
+    
     return None
 
 
 
 
+def normalize_smiles(smiles):
+    """Normalize SMILES input by allowing polymer repeat notation [smiles]n."""
+    if not isinstance(smiles, str):
+        return smiles
+    polymer_match = re.match(r'^\s*\[([^\]]+)\]n\s*$', smiles, re.IGNORECASE)
+    if polymer_match:
+        return polymer_match.group(1).strip()
+    return smiles.strip()
+
+
 def validate_smiles(smiles):
-    mol = Chem.MolFromSmiles(smiles)
+    normalized = normalize_smiles(smiles)
+    mol = Chem.MolFromSmiles(normalized)
     return mol is not None
 
-
+#deprecated testing code
 # molname = input("Enter the name of the molecule: ")
 # smiles = retrieve_smiles(molname)
 # if smiles:

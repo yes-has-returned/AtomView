@@ -1,7 +1,12 @@
-{% extends "topnav.html" %} 
-
-{% block content %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/renderer.css') }}">
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/renderer.css', v='2') }}">
+    <title>AtomView Renderer</title>
+</head>
+<body>
 
 <div id="sidebar" class="sidebar">
     <button id="toggle-btn">
@@ -92,6 +97,10 @@
                     <label for="lowDetailMode">Fewer details <br><div class="alg-desc">Use lower mesh resolution and simplified labels for faster rendering.</div></label>
                 </div>
                 <div class="check-group">
+                    <input type="checkbox" id="forcePolymerization" name="forcePolymerization" value="forcePolymerization" class="render-trigger">
+                    <label for="forcePolymerization">Force polymerisation <br><div class="alg-desc">Treat the molecule as a repeating polymer chain.</div></label>
+                </div>
+                <div class="check-group">
                     <input type="checkbox" id="advancedMovement" name="advancedMovement" value="advancedMovement">
                     <label for="advancedMovement">Advanced movement <br><div class="alg-desc">Enable WASD + mouse look. Disable for mouse rotate + scroll zoom.</div></label>
                 </div>
@@ -109,9 +118,17 @@
     </div>
 </div>
 
-<div style="position: relative;">
-<div id="scene-container" style="width: 100%; height: 600px; background-color: #ffffff;"></div>
-<div id="loading-screen" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; background: rgba(255,255,255,0.9); padding: 20px; border: 1px solid #ccc; border-radius: 5px; z-index: 10;">Loading molecule...</div>
+<div style="position: relative; height: 100vh;">
+<div id="scene-container" style="background-color: #ffffff;"></div>
+<div id="loading-screen" class="loading-screen" style="display: none;">
+    <div class="loading-panel">
+        <div id="progress-message" class="loading-message">Loading molecule...</div>
+        <div class="loader-progress">
+            <div id="progress-bar" class="progress-bar"></div>
+        </div>
+        <div id="progress-text" class="progress-text">0%</div>
+    </div>
+</div>
 <div id="error-message" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; background: rgba(255,200,200,0.95); padding: 20px; border: 2px solid #cc0000; border-radius: 5px; z-index: 10; color: #cc0000; font-weight: bold; text-align: center;">Molecule not found. Please check your input and try again.</div>
 </div>
 
@@ -122,10 +139,12 @@
     
     <div class="right-content">
         <div class="info-section">
-            <h3>Molecular Formula</h3>
-            <div id="molecularFormulaDisplay" class="formula-display">-</div>
+            <h3 id="molecularFormulaLabel">Molecular Formula</h3>
+            <div id="molecularFormulaDisplay" class="formula-display" style="cursor: default;">-</div>
+            <h4>Click to cycle through formulas</h4>
         </div>
-        
+
+
         <div class="info-section">
             <h3>2D Structure</h3>
             <div id="structure2dDisplay" class="structure-display">
@@ -165,4 +184,5 @@
 <script type="module" src="{{ url_for('static', filename='js/renderercollapsible.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/rendererinputtoggle.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/moleculerenderer.js') }}"></script>
-{% endblock %}
+</body>
+</html>

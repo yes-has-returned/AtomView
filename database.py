@@ -4,31 +4,48 @@ from contextlib import contextmanager
 import psycopg2
 from psycopg2 import OperationalError
 
+internal_url = "postgresql://community:Mnc6wwt2UaL1EkhOF2iW2q0Ss9uHEPlU@dpg-d8e9mucp3tds738cd1n0-a/community_database_s4tu"
+external_url = "postgresql://community:Mnc6wwt2UaL1EkhOF2iW2q0Ss9uHEPlU@dpg-d8e9mucp3tds738cd1n0-a.oregon-postgres.render.com/community_database_s4tu"
+_cached_db_url = None
+_votes_table_initialized = False
+
+
+def _connect_url(url, timeout=2):
+    if not url:
+        return None
+    connect_kwargs = {"connect_timeout": timeout}
+    if url == external_url:
+        connect_kwargs["sslmode"] = "require"
+    return psycopg2.connect(url, **connect_kwargs)
+
 
 @contextmanager
 def get_db_connection():
     """Context manager yielding a psycopg2 connection or None on failure.
 
-    Tries an internal URL then an external URL (if provided via env vars).
-    If both fail, yields None and issues a warning.
+    Uses the fastest available connection URL and caches the working URL for later calls.
     """
-    internal_url = "postgresql://community:Mnc6wwt2UaL1EkhOF2iW2q0Ss9uHEPlU@dpg-d8e9mucp3tds738cd1n0-a/community_database_s4tu"
-    external_url = "postgresql://community:Mnc6wwt2UaL1EkhOF2iW2q0Ss9uHEPlU@dpg-d8e9mucp3tds738cd1n0-a.oregon-postgres.render.com/community_database_s4tu"
+    global _cached_db_url
+    env_url = os.getenv("DATABASE_URL")
+    candidate_urls = []
+
+    if _cached_db_url:
+        candidate_urls.append(_cached_db_url)
+    if env_url and env_url != _cached_db_url:
+        candidate_urls.append(env_url)
+    if internal_url and internal_url not in candidate_urls:
+        candidate_urls.append(internal_url)
+    if external_url and external_url not in candidate_urls:
+        candidate_urls.append(external_url)
 
     conn = None
-    # Try internal/primary URL first
-    if internal_url:
+    for url in candidate_urls:
         try:
-            conn = psycopg2.connect(internal_url, connect_timeout=3)
+            conn = _connect_url(url)
+            _cached_db_url = url
+            break
         except OperationalError:
-            conn = None
-
-    # Fallback to external if provided and internal failed
-    if conn is None and external_url:
-        try:
-            conn = psycopg2.connect(external_url, sslmode='require', connect_timeout=5)
-        except OperationalError:
-            conn = None
+            continue
 
     if conn is None:
         warnings.warn("Database unavailable. Check your DATABASE_URL or connection settings.")
@@ -105,6 +122,9 @@ def query_community_entries(name):
 
 
 def _ensure_votes_table():
+    global _votes_table_initialized
+    if _votes_table_initialized:
+        return
     with get_db_connection() as conn:
         if conn is None:
             warnings.warn("Database unavailable when ensuring votes table.")
@@ -122,6 +142,7 @@ def _ensure_votes_table():
             """
         )
         cur.close()
+        _votes_table_initialized = True
 
 
 def adjust_community_vote(entry_id, voter_id, vote):

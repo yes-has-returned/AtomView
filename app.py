@@ -1,8 +1,18 @@
+import re
+import math
 from flask import Flask, render_template, request, jsonify, redirect, url_for, make_response
+from werkzeug.exceptions import HTTPException
 import moleculerenderer
 from database import get_db_connection
 import database
 from rdkit import Chem
+from rdkit.Chem import rdMolDescriptors
+
+try:
+    database.initiate_database()
+    database._ensure_votes_table()
+except ConnectionError:
+    pass
 from rdkit.Chem import Draw, Descriptors
 import io
 import base64
@@ -15,7 +25,48 @@ def get_molecular_formula(smiles):
     mol = Chem.MolFromSmiles(smiles)
     if not mol:
         return None
-    return Chem.rdMolDescriptors.CalcMolFormula(mol)
+    return rdMolDescriptors.CalcMolFormula(mol)
+
+def get_empirical_formula(smiles):
+    """Generate empirical formula (lowest integer ratio) from SMILES."""
+    try:
+        key = get_atomic_key(smiles)
+        if not key:
+            return get_molecular_formula(smiles)
+        
+        # Extract counts and find their Greatest Common Divisor
+        counts = [item["count"] for item in key]
+        if not counts:
+            return get_molecular_formula(smiles)
+        
+        common_divisor = counts[0]
+        for count in counts[1:]:
+            common_divisor = math.gcd(common_divisor, count)
+            
+        # Build formula string using reduced ratios
+        empirical_parts = []
+        for item in key:
+            reduced_count = item["count"] // common_divisor
+            count_str = str(reduced_count) if reduced_count > 1 else ""
+            empirical_parts.append(f"{item['symbol']}{count_str}")
+            
+        return "".join(empirical_parts)
+    except Exception as e:
+        print(f"Error computing empirical formula: {e}")
+        return get_molecular_formula(smiles)
+
+def get_condensed_formula(smiles):
+    """Generate structural condensed formula layout from SMILES string."""
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            return smiles
+        # Explicitly add hydrogens so CalcMolFormula counts them (e.g., NH3 instead of N)
+        mol_with_h = Chem.AddHs(mol)
+        return rdMolDescriptors.CalcMolFormula(mol_with_h)
+    except Exception as e:
+        print(f"Error computing condensed formula: {e}")
+        return smiles
 
 def get_2d_structure_image(smiles, size=300):
     """Generate 2D molecular structure image as base64."""
@@ -55,19 +106,30 @@ def get_atomic_key(smiles):
 
 def parse_geometry(positions, bonds):
     """Utility to convert RDKit objects into serializable JSON."""
-    parsed_atoms = [{
-        "id": a.id, "symbol": a.symbol,
-        "charge": getattr(a, 'charge', 0),
-        "x": a.x, "y": a.y, "z": a.z
-    } for a in positions]
-    
+    pt = Chem.GetPeriodicTable()
+
+    parsed_atoms = []
+    for index, a in enumerate(positions):
+        atomic_num = pt.GetAtomicNumber(a.symbol)
+        atom_id = getattr(a, 'id', None)
+        if atom_id is None:
+            atom_id = index
+        parsed_atoms.append({
+            "id": int(atom_id),
+            "symbol": a.symbol,
+            "name": pt.GetElementName(atomic_num),
+            "mass": round(pt.GetAtomicWeight(atomic_num), 3),
+            "charge": getattr(a, 'charge', 0),
+            "x": a.x, "y": a.y, "z": a.z
+        })
+        
     parsed_bonds = [{
         "start": b[0], "end": b[1], "type": str(b[2])
     } for b in bonds]
     
     return parsed_atoms, parsed_bonds
 
-def get_assembly_instructions(smiles, name=None):
+def get_assembly_instructions(smiles, name=None, force_polymer=False):
     """
     Unified checker: Determines if the input is a monomer or polymer.
     """
@@ -89,16 +151,30 @@ def get_assembly_instructions(smiles, name=None):
                     "is_polymer": True,
                     "is_heuristic": True
                 }]
-    
-    # 2. Check for synthetic polymer hints
+
     endpoints = moleculerenderer.identify_polymer_endpoints(smiles)
-    # Trigger polymer if:
-    # - Has dummy atoms (*) marking polymer endpoints, OR
-    # - Name contains 'poly', OR
-    # - Has terminal endpoints and enough atoms
     is_polymer_by_name = name and "poly" in name.lower()
     is_polymer_by_structure = has_dummy_atoms or (endpoints and num_atoms > 20)
-    
+
+    if force_polymer:
+        if endpoints:
+            return [{
+                "type": "linear",
+                "head_idx": endpoints["head_idx"],
+                "tail_idx": endpoints["tail_idx"],
+                "is_polymer": True,
+                "is_heuristic": True
+            }]
+        if num_atoms >= 2:
+            return [{
+                "type": "linear",
+                "head_idx": 0,
+                "tail_idx": num_atoms - 1,
+                "is_polymer": True,
+                "is_heuristic": True
+            }]
+
+    # 2. Check for synthetic polymer hints
     if endpoints and (is_polymer_by_name or is_polymer_by_structure):
         return [{
             "type": "linear",
@@ -118,7 +194,7 @@ def service_worker():
 
 @app.route('/')
 def homepage():
-   return render_template('home.html')
+    return redirect(url_for('renderer'))
 
 @app.route('/render')
 def renderer():
@@ -128,6 +204,7 @@ def renderer():
 def render_backend_name():
     name = request.args.get('name')
     methods = request.args.get('methods', 'PubChem,OPSIN').split(',')
+    force_polymer = request.args.get('force_polymerization', 'false').lower() in ('1', 'true', 'yes')
     smiles = None
 
     for method in methods:
@@ -154,10 +231,12 @@ def render_backend_name():
         return jsonify({"error": str(e)}), 400
 
     atoms, bonds_data = parse_geometry(positions, bonds)
-    instructions = get_assembly_instructions(smiles, name)
+    instructions = get_assembly_instructions(smiles, name, force_polymer=force_polymer)
     
     # Get molecular data
     molecular_formula = get_molecular_formula(smiles)
+    empirical_formula = get_empirical_formula(smiles)
+    condensed_formula = get_condensed_formula(smiles)
     structure_image = get_2d_structure_image(smiles)
     atomic_key = get_atomic_key(smiles)
 
@@ -166,6 +245,9 @@ def render_backend_name():
         "bonds": bonds_data,
         "assembly_instructions": instructions,
         "molecular_formula": molecular_formula,
+        "empirical_formula": empirical_formula,
+        "condensed_formula": condensed_formula,
+        "smiles_formula": smiles,
         "structure_image": structure_image,
         "atomic_key": atomic_key
     })
@@ -277,16 +359,24 @@ def render_backend_smiles():
     if not smiles:
         return jsonify({"error": "No SMILES string provided."}), 400
 
+    force_polymer = request.args.get('force_polymerization', 'false').lower() in ('1', 'true', 'yes')
+    polymer_smiles_match = re.match(r'^\s*\[([^\]]+)\]n\s*$', smiles, re.IGNORECASE)
+    if polymer_smiles_match:
+        smiles = polymer_smiles_match.group(1)
+        force_polymer = True
+
     try:
         positions, bonds = moleculerenderer.generate_molecule_data(smiles)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
     atoms, bonds_data = parse_geometry(positions, bonds)
-    instructions = get_assembly_instructions(smiles)
+    instructions = get_assembly_instructions(smiles, force_polymer=force_polymer)
     
     # Get molecular data
     molecular_formula = get_molecular_formula(smiles)
+    empirical_formula = get_empirical_formula(smiles)
+    condensed_formula = get_condensed_formula(smiles)
     structure_image = get_2d_structure_image(smiles)
     atomic_key = get_atomic_key(smiles)
 
@@ -295,9 +385,23 @@ def render_backend_smiles():
         "bonds": bonds_data,
         "assembly_instructions": instructions,
         "molecular_formula": molecular_formula,
+        "empirical_formula": empirical_formula,
+        "condensed_formula": condensed_formula,
+        "smiles_formula": smiles,
         "structure_image": structure_image,
         "atomic_key": atomic_key
     })
 
+@app.route('/renderbackend/atom')
+def fetch_atom_data():
+    id = request.args.get('id')
+
+
+@app.errorhandler(Exception)
+def handle_unhandled_exception(e):
+    if isinstance(e, HTTPException):
+        return jsonify({"error": e.description}), e.code
+    return jsonify({"error": "Internal server error."}), 500
+
 if __name__ == "__main__":
-   app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=5000)

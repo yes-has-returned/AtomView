@@ -1,17 +1,23 @@
 <!doctype html>
 <html>
     <head>
-        <link rel="stylesheet" href="{{ url_for('static', filename='css/topnavstyle.css') }}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='css/topnavstyle.css', v='3') }}">
+        <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='icons/favicon-192x192.png') }}">
+        <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}">
+        <link rel="apple-touch-icon" sizes="192x192" href="{{ url_for('static', filename='icons/atomview-icon-192x192.png') }}">
         <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+        <meta name="theme-color" content="#333333">
         <title>AtomView</title>
-    </head>
-</html>
-<body>
+      </head>
+      <body>
     <div class="topnav">
+            <a href="/" class="logo">
+                <img src="{{ url_for('static', filename='icons/atomview-icon-512x512.png') }}" alt="AtomView logo" id="logo-img" class="logoimg">
+                <span class="logo-text">AtomView</span>
+            </a>
             <a href="/">Home</a>
-            <a href="/">Placeholder</a>
-            <a href="/">Placeholder</a>
-            <a href="/">Placeholder</a>
+            <a href="/render">Renderer</a>
+            
     </div>
     {% block content %}{% endblock %}
     <script>
@@ -26,5 +32,6 @@
             });
         });
       }
-    </script>
-</body>
+  </script>
+  </body>
+  </html>
