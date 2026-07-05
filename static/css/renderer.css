@@ -63,7 +63,7 @@ body[data-theme="high-contrast"] .right-sidebar,
 body[data-theme="high-contrast"] .right-content,
 body[data-theme="high-contrast"] .info-section,
 body[data-theme="high-contrast"] .community-entry {
-  color: #fff;
+  color: #fff !important;
 }
 
 body[data-theme="high-contrast"] .loading-screen,
@@ -651,4 +651,8 @@ body[data-theme="high-contrast"] .input-toggle input:checked + label {
   .right-content::-webkit-scrollbar-thumb:hover {
     background-color: var(--scroll-hover) !important;
   }
+}
+
+body[data-theme="high-contrast"] .info-section h3 {
+  color: #fff !important;
 }

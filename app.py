@@ -225,12 +225,24 @@ def render_backend_name():
             response["community_entries"] = community_entries
         return jsonify(response), 404
 
+    # Fix coordination complex SMILES if needed
+    smiles = moleculerenderer.fix_coordination_complex_smiles(smiles)
+
     try:
         positions, bonds = moleculerenderer.generate_molecule_data(smiles)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
     atoms, bonds_data = parse_geometry(positions, bonds)
+    
+    # DEBUG: Log bonds for hexaamminecobalt
+    if "cobalt" in name.lower() or "co" in smiles:
+        print(f"DEBUG: Name='{name}', SMILES='{smiles}'")
+        print(f"DEBUG: generate_molecule_data returned {len(bonds)} bonds")
+        print(f"DEBUG: parse_geometry returned {len(bonds_data)} bonds_data")
+        for i, b in enumerate(bonds_data[:10]):
+            print(f"  {i}: start={b['start']}, end={b['end']}, type={b['type']}")
+    
     instructions = get_assembly_instructions(smiles, name, force_polymer=force_polymer)
     
     # Get molecular data
