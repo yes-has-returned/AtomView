@@ -14,6 +14,10 @@
     </button>
     
     <div class="content">
+        <button class="contrast-toggle" type="button" aria-pressed="false">
+            <span class="contrast-toggle-icon" aria-hidden="true">◑</span>
+            <span class="contrast-toggle-label">High contrast</span>
+        </button>
         <h2>Renderer Settings</h2>
         
     <div class="input-group">
@@ -181,6 +185,7 @@
 }
 </script>
 
+<script src="{{ url_for('static', filename='js/highcontrast.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/renderercollapsible.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/rendererinputtoggle.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/moleculerenderer.js') }}"></script>

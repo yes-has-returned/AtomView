@@ -7,6 +7,7 @@
         <link rel="apple-touch-icon" sizes="192x192" href="{{ url_for('static', filename='icons/atomview-icon-192x192.png') }}">
         <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
         <meta name="theme-color" content="#333333">
+        <meta name="description" content="AtomView — interactive 3D molecule renderer and explorer. Visualize molecules, inspect atoms, and analyze bond geometry in your browser.">
         <title>AtomView</title>
       </head>
       <body>
@@ -17,9 +18,14 @@
             </a>
             <a href="/">Home</a>
             <a href="/render">Renderer</a>
+            <button class="contrast-toggle" type="button" aria-pressed="false">
+                <span class="contrast-toggle-icon" aria-hidden="true">◑</span>
+                <span class="contrast-toggle-label">High contrast</span>
+            </button>
             
     </div>
     {% block content %}{% endblock %}
+    <script src="{{ url_for('static', filename='js/highcontrast.js') }}"></script>
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
